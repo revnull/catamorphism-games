@@ -1,11 +1,16 @@
 
 module Game (Player(..), other, Game, GameTree, buildGameTree,
-             xtoCount, minimax, playGame, prompt, uniquePositions) where
+             xtoCount, minimax, playGame, prompt, unique) where
 
-import Data.Maybe
-import Control.Monad
-import Data.Function
-import qualified Data.Map as M
+import Prelude hiding (lookup)
+
+import Data.Maybe (fromJust)
+import Control.Monad (unless)
+import Data.Function (fix, on)
+import Data.List (minimumBy, maximumBy)
+import Data.Map (Map, member, lookup, insert, empty)
+import Data.Foldable (Foldable, foldMap, toList)
+import Data.Monoid (mempty)
 
 newtype Mu f = InF { outF :: f (Mu f) }
 
@@ -18,10 +23,10 @@ cataF rec f = f . fmap (rec f) . outF
 cata :: Functor f => (f a -> a) -> Mu f -> a
 cata = fix cataF
 
-cataM :: Ord s => (GameTreeF s a -> a) -> GameTree s -> a
+cataM :: (Ord (f ()), Foldable f, Functor f) => (f a -> a) -> Mu f -> a
 cataM f mu =
-    let memoized = fmap (cataF fn f) $ uniquePositions mu
-        fn _ mu' = fromJust $ M.lookup (fmap (const ()) $ outF mu') memoized
+    let memoized = fmap (cataF fn f) $ unique mu
+        fn _ mu' = fromJust $ lookup (fmap (const ()) $ outF mu') memoized
     in fn f mu
 
 data Player = X | O
@@ -42,35 +47,24 @@ data GameTreeF s a =
 type GameTree s = Mu (GameTreeF s)
 
 instance Functor (GameTreeF s) where
-  fmap f (Turn p s subs) = Turn p s (fmap f subs)
-  fmap f (Tie s) = Tie s
-  fmap f (Win p s) = Win p s
+    fmap f (Turn p s subs) = Turn p s (fmap f subs)
+    fmap f (Tie s) = Tie s
+    fmap f (Win p s) = Win p s
 
-type PositionMap s = M.Map (GameTreeF s ()) (GameTree s)
+instance Foldable (GameTreeF s) where
+    foldMap fn (Turn _ _ l) = foldMap fn l
+    foldMap _ _ = mempty
 
-uniquePositions :: (Ord s) => GameTree s -> PositionMap s
-uniquePositions mu = cata unique mu mu M.empty
-
-type PositionMapFn s = (GameTree s) -> PositionMap s -> PositionMap s
-
-unique :: Ord s => GameTreeF s (PositionMapFn s) -> PositionMapFn s
-unique f mu m
-  | M.member blank m = m
-  | otherwise = case (f, outF mu) of
-        (Turn _ _ fns, Turn _ _ mus) -> 
-            let fns' = zipWith ($) fns mus
-            in foldr ($) m' fns'
-        _ -> m'
-  where blank = fmap (const ()) f
-        m' = M.insert blank mu m
-
-percolateUp :: (a -> Bool) -> [a] -> [a]
-percolateUp pred = percolateUp' id
-  where percolateUp' fn [] = fn []
-        percolateUp' fn (x:xs) = 
-            if pred x
-                then x:percolateUp' fn xs
-                else percolateUp' (fn . (x:)) xs
+unique :: (Ord (f ()), Functor f, Foldable f) => Mu f -> Map (f ()) (Mu f)
+unique mu = cata unique' mu mu empty
+  where unique' f mu m
+          | member blank m = m
+          | otherwise =
+              let m' = insert blank mu m
+                  fns = toList f
+                  mus = toList $ outF mu
+              in foldr ($) m' $ zipWith ($) fns mus
+          where blank = fmap (const ()) f
 
 buildGameTree :: Game s -> Player -> s -> GameTree s
 buildGameTree (moves, winner) player board = ana tree (player, board)
@@ -78,10 +72,7 @@ buildGameTree (moves, winner) player board = ana tree (player, board)
             case (winner p b, moves p b) of
                 (Just x, _) -> Win x b
                 (_, []) -> Tie b
-                (_, plays) ->
-                    let subPlays = [(other p, play) | play <- plays]
-                        ordered = percolateUp (isJust . uncurry winner) subPlays
-                    in Turn p b ordered
+                (_, plays) -> Turn p b [(other p, play) | play <- plays]
 
 xtoCount :: Ord s => GameTree s -> (Int, Int, Int)
 xtoCount = cataM counts
@@ -105,13 +96,8 @@ minimax game player = outcome . cataM mm . buildGameTree game player
             let fn = if p == player then maxGame else minGame
                 (oc, ms) = fn subs
             in (oc, s:ms)
-        maxGame (x:xs) = extreme Victory (>) x xs
-        minGame (x:xs) = extreme Defeat (<) x xs
-        extreme _ _ t1 [] = t1
-        extreme bound fn t1@(x, _) (t2@(y,_):ts)
-            | x == bound = t1
-            | fn y x = extreme bound fn t2 ts
-            | otherwise = extreme bound fn t1 ts
+        maxGame = maximumBy (compare `on` fst)
+        minGame = minimumBy (compare `on` fst)
 
 done :: Show s => Game s -> Player -> s -> IO Bool
 done (moves, winner) player board =
