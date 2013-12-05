@@ -5,6 +5,7 @@ import Control.Monad
 import qualified Data.Map as M
 
 newtype NimBoard = NimBoard (M.Map Int Int)
+  deriving (Eq, Ord)
 
 nimWinner :: Player -> NimBoard -> Maybe Player
 nimWinner player (NimBoard board) = do

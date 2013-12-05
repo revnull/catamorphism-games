@@ -1,17 +1,28 @@
 
 module Game (Player(..), other, Game, GameTree, buildGameTree,
-             xtoCount, minimax, playGame, prompt) where
+             xtoCount, minimax, playGame, prompt, uniquePositions) where
 
 import Data.Maybe
 import Control.Monad
+import Data.Function
+import qualified Data.Map as M
 
 newtype Mu f = InF { outF :: f (Mu f) }
 
 ana :: Functor f => (a -> f a) -> a -> Mu f
 ana f = InF . fmap (ana f) . f
 
+cataF :: Functor f => ((f a -> a) -> Mu f -> a) -> (f a -> a) -> Mu f -> a
+cataF rec f = f . fmap (rec f) . outF
+
 cata :: Functor f => (f a -> a) -> Mu f -> a
-cata f = f . fmap (cata f) . outF
+cata = fix cataF
+
+cataM :: Ord s => (GameTreeF s a -> a) -> GameTree s -> a
+cataM f mu =
+    let memoized = fmap (cataF fn f) $ uniquePositions mu
+        fn _ mu' = fromJust $ M.lookup (fmap (const ()) $ outF mu') memoized
+    in fn f mu
 
 data Player = X | O
   deriving (Read, Show, Eq, Ord)
@@ -26,6 +37,7 @@ data GameTreeF s a =
     Turn Player s [a]
   | Win Player s
   | Tie s
+  deriving (Eq, Ord)
 
 type GameTree s = Mu (GameTreeF s)
 
@@ -33,6 +45,24 @@ instance Functor (GameTreeF s) where
   fmap f (Turn p s subs) = Turn p s (fmap f subs)
   fmap f (Tie s) = Tie s
   fmap f (Win p s) = Win p s
+
+type PositionMap s = M.Map (GameTreeF s ()) (GameTree s)
+
+uniquePositions :: (Ord s) => GameTree s -> PositionMap s
+uniquePositions mu = cata unique mu mu M.empty
+
+type PositionMapFn s = (GameTree s) -> PositionMap s -> PositionMap s
+
+unique :: Ord s => GameTreeF s (PositionMapFn s) -> PositionMapFn s
+unique f mu m
+  | M.member blank m = m
+  | otherwise = case (f, outF mu) of
+        (Turn _ _ fns, Turn _ _ mus) -> 
+            let fns' = zipWith ($) fns mus
+            in foldr ($) m' fns'
+        _ -> m'
+  where blank = fmap (const ()) f
+        m' = M.insert blank mu m
 
 percolateUp :: (a -> Bool) -> [a] -> [a]
 percolateUp pred = percolateUp' id
@@ -53,8 +83,8 @@ buildGameTree (moves, winner) player board = ana tree (player, board)
                         ordered = percolateUp (isJust . uncurry winner) subPlays
                     in Turn p b ordered
 
-xtoCount :: GameTree s -> (Int, Int, Int)
-xtoCount = cata counts
+xtoCount :: Ord s => GameTree s -> (Int, Int, Int)
+xtoCount = cataM counts
   where addAll (a,b,c) (x,y,z) = (a+x,b+y,c+z)
         counts (Win X _) = (1, 0, 0)
         counts (Win O _) = (0, 0, 1)
@@ -64,8 +94,8 @@ xtoCount = cata counts
 data Outcome = Defeat | Boredom | Victory
   deriving (Read, Show, Eq, Ord)
 
-minimax :: Game s -> Player -> s -> s
-minimax game player = outcome . cata mm . buildGameTree game player
+minimax :: Ord s => Game s -> Player -> s -> s
+minimax game player = outcome . cataM mm . buildGameTree game player
   where outcome (_, s) = s !! 1
         mm (Win p s)
             | player == p = (Victory, [s])
@@ -96,7 +126,7 @@ done (moves, winner) player board =
             return True
         otherwise -> return False
 
-playGame :: Show s => Game s -> s -> (Player -> s -> IO s) -> IO ()
+playGame :: (Ord s, Show s) => Game s -> s -> (Player -> s -> IO s) -> IO ()
 playGame game initial humanIO = do
     players <- getPlayers
     gameLoop players initial

@@ -6,6 +6,7 @@ import Data.List
 import Game
 
 newtype Board = Board (M.Map Int Player)
+  deriving (Eq, Ord)
 
 initialBoard = Board M.empty
 
