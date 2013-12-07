@@ -17,17 +17,36 @@ newtype Mu f = InF { outF :: f (Mu f) }
 ana :: Functor f => (a -> f a) -> a -> Mu f
 ana f = InF . fmap (ana f) . f
 
+-- cataF is the catamorphism with the recursion factored out so it can be
+-- used with a fixed-point combinator.
 cataF :: Functor f => ((f a -> a) -> Mu f -> a) -> (f a -> a) -> Mu f -> a
 cataF rec f = f . fmap (rec f) . outF
 
 cata :: Functor f => (f a -> a) -> Mu f -> a
 cata = fix cataF
 
+-- cataM applies a fixed-point memoizing operator to cataF. It provides the
+-- same interface as cata, but with additional constraints used to calculate
+-- the Map of all unique (Mu f).
 cataM :: (Ord (f ()), Foldable f, Functor f) => (f a -> a) -> Mu f -> a
 cataM f mu =
     let memoized = fmap (cataF fn f) $ unique mu
         fn _ mu' = fromJust $ lookup (fmap (const ()) $ outF mu') memoized
     in fn f mu
+
+-- This function takes a (Mu f) and computes a Map of all possible (Mu f)
+-- instances in the structure. The key for each (Mu f) is equivalent to the
+-- underlying functor with the sub Mu structures replaced with ().
+unique :: (Ord (f ()), Functor f, Foldable f) => Mu f -> Map (f ()) (Mu f)
+unique mu = cata unique' mu mu empty
+  where unique' f mu m
+          | member blank m = m
+          | otherwise =
+              let m' = insert blank mu m
+                  fns = toList f
+                  mus = toList $ outF mu
+              in foldr ($) m' $ zipWith ($) fns mus
+          where blank = fmap (const ()) f
 
 data Player = X | O
   deriving (Read, Show, Eq, Ord)
@@ -36,6 +55,9 @@ other :: Player -> Player
 other X = O
 other O = X
 
+-- Rules of the game:
+-- Given a player and board state determine the sub board states.
+-- Given a player and a board state determine if there is a winner.
 type Game s = (Player -> s -> [s], Player -> s -> Maybe Player)
 
 data GameTreeF s a =
@@ -55,17 +77,7 @@ instance Foldable (GameTreeF s) where
     foldMap fn (Turn _ _ l) = foldMap fn l
     foldMap _ _ = mempty
 
-unique :: (Ord (f ()), Functor f, Foldable f) => Mu f -> Map (f ()) (Mu f)
-unique mu = cata unique' mu mu empty
-  where unique' f mu m
-          | member blank m = m
-          | otherwise =
-              let m' = insert blank mu m
-                  fns = toList f
-                  mus = toList $ outF mu
-              in foldr ($) m' $ zipWith ($) fns mus
-          where blank = fmap (const ()) f
-
+-- Anamorphism over the game state used to construct the GameTree.
 buildGameTree :: Game s -> Player -> s -> GameTree s
 buildGameTree (moves, winner) player board = ana tree (player, board)
   where tree (p, b) =
@@ -74,6 +86,10 @@ buildGameTree (moves, winner) player board = ana tree (player, board)
                 (_, []) -> Tie b
                 (_, plays) -> Turn p b [(other p, play) | play <- plays]
 
+-- Takes a GameTree and computes a triple containing:
+-- Victories for X
+-- Ties
+-- Victories for O
 xtoCount :: Ord s => GameTree s -> (Int, Int, Int)
 xtoCount = cataM counts
   where addAll (a,b,c) (x,y,z) = (a+x,b+y,c+z)
@@ -85,6 +101,7 @@ xtoCount = cataM counts
 data Outcome = Defeat | Boredom | Victory
   deriving (Read, Show, Eq, Ord)
 
+-- Minimax constructed with the memoizing catamorphism.
 minimax :: Ord s => Game s -> Player -> s -> s
 minimax game player = outcome . cataM mm . buildGameTree game player
   where outcome (_, s) = s !! 1
@@ -98,6 +115,8 @@ minimax game player = outcome . cataM mm . buildGameTree game player
             in (oc, s:ms)
         maxGame = maximumBy (compare `on` fst)
         minGame = minimumBy (compare `on` fst)
+
+-- Everything below here is IO for playing the game.
 
 done :: Show s => Game s -> Player -> s -> IO Bool
 done (moves, winner) player board =
