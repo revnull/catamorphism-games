@@ -29,10 +29,9 @@ cata = fix cataF
 -- same interface as cata, but with additional constraints used to calculate
 -- the Map of all unique (Mu f).
 cataM :: (Ord (f ()), Foldable f, Functor f) => (f a -> a) -> Mu f -> a
-cataM f mu =
-    let memoized = fmap (cataF fn f) $ unique mu
+cataM f mu = fn f mu
+  where memoized = fmap (cataF fn f) $ unique mu
         fn _ mu' = fromJust $ lookup (fmap (const ()) $ outF mu') memoized
-    in fn f mu
 
 -- This function takes a (Mu f) and computes a Map of all possible (Mu f)
 -- instances in the structure. The key for each (Mu f) is equivalent to the
@@ -109,10 +108,9 @@ minimax game player = outcome . cataM mm . buildGameTree game player
             | player == p = (Victory, [s])
             | otherwise = (Defeat, [s])
         mm (Tie s) = (Boredom, [s])
-        mm (Turn p s subs) =
-            let fn = if p == player then maxGame else minGame
+        mm (Turn p s subs) = (oc, s:ms)
+          where fn = if p == player then maxGame else minGame
                 (oc, ms) = fn subs
-            in (oc, s:ms)
         maxGame = maximumBy (compare `on` fst)
         minGame = minimumBy (compare `on` fst)
 
